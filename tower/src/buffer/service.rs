@@ -7,6 +7,7 @@ use super::{
 use futures_core::ready;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Instant;
 use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::PollSemaphore;
 use tower_service::Service;
@@ -37,6 +38,7 @@ where
     // This is acquired in `poll_ready` and taken in `call`.
     permit: Option<OwnedSemaphorePermit>,
     handle: Handle,
+    permit_first_acquisition_time: Option<Instant>,
 }
 
 impl<T, Request> Buffer<T, Request>
@@ -96,6 +98,7 @@ where
             handle,
             semaphore: PollSemaphore::new(semaphore),
             permit: None,
+            permit_first_acquisition_time: None,
         };
         (buffer, worker)
     }
@@ -131,6 +134,9 @@ where
         // to acquire one. If we acquire a permit, then there's enough buffer
         // capacity to send a new request. Otherwise, we need to wait for
         // capacity.
+        if self.permit_first_acquisition_time.is_none() {
+            self.permit_first_acquisition_time = Some(Instant::now());
+        }
         let permit =
             ready!(self.semaphore.poll_acquire(cx)).ok_or_else(|| self.get_worker_error())?;
         self.permit = Some(permit);
@@ -144,6 +150,15 @@ where
             .permit
             .take()
             .expect("buffer full; poll_ready must be called first");
+
+        let permit_first_acquisition_time = self
+            .permit_first_acquisition_time
+            .take()
+            .expect("buffer permit acquisition time never set; poll_ready must be called first");
+        metrics::histogram!(
+            "tc_tower_buffer_acquisition_time_seconds",
+            permit_first_acquisition_time.elapsed(),
+        );
 
         // get the current Span so that we can explicitly propagate it to the worker
         // if we didn't do this, events on the worker related to this span wouldn't be counted
@@ -178,6 +193,7 @@ where
             // The new clone hasn't acquired a permit yet. It will when it's
             // next polled ready.
             permit: None,
+            permit_first_acquisition_time: None,
         }
     }
 }

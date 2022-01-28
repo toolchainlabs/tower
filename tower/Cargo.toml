@@ -78,6 +78,9 @@ tokio-util = { version = "0.6.3", default-features = false, optional = true }
 tracing = { version = "0.1.2", optional = true }
 pin-project-lite = "0.2.7"
 
+# TOOLCHAIN EDITS:
+metrics = "0.17"
+
 [dev-dependencies]
 futures = "0.3"
 hdrhistogram = "6.0"
