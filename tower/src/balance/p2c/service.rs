@@ -8,6 +8,7 @@ use pin_project_lite::pin_project;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use std::hash::Hash;
 use std::marker::PhantomData;
+use std::time::Instant;
 use std::{
     fmt,
     future::Future,
@@ -42,6 +43,8 @@ where
     rng: SmallRng,
 
     _req: PhantomData<Req>,
+
+    poll_ready_first_call_time: Option<Instant>,
 }
 
 impl<D: Discover, Req> fmt::Debug for Balance<D, Req>
@@ -99,6 +102,8 @@ where
             ready_index: None,
 
             _req: PhantomData,
+
+            poll_ready_first_call_time: None,
         })
     }
 
@@ -236,6 +241,10 @@ where
     >;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        if self.poll_ready_first_call_time.is_none() {
+            self.poll_ready_first_call_time = Some(Instant::now());
+        }
+
         // `ready_index` may have already been set by a prior invocation. These
         // updates cannot disturb the order of existing ready services.
         let _ = self.update_pending_from_discover(cx)?;
@@ -281,6 +290,14 @@ where
 
     fn call(&mut self, request: Req) -> Self::Future {
         let index = self.ready_index.take().expect("called before ready");
+        let poll_ready_first_call_time = self
+            .poll_ready_first_call_time
+            .take()
+            .expect("called before ready");
+        metrics::histogram!(
+            "tc_tower_balance_acquisition_time_seconds",
+            poll_ready_first_call_time.elapsed(),
+        );
         self.services
             .call_ready_index(index, request)
             .map_err(Into::into)
